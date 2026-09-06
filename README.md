@@ -5,6 +5,8 @@
 播放器：可以点按进度条跳转了，播放器菜单面缩小
 一个基于 React Native TVOS 和 Expo 构建的播放器，旨在提供流畅的视频观看体验。
 
+https://pan.quark.cn/s/2b3129dba1e5?pwd=UrDj  安装包不知道为啥传不上去，直接放链接吧
+
 ## ✨ 功能特性
 
 - **框架跨平台支持**: 同时支持构建 Apple TV 和 Android TV。
