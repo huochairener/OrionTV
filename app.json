@@ -40,6 +40,7 @@
     },
     "name": "OrionTV",
     "slug": "OrionTV",
+    "version": "1.3.37",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "userInterfaceStyle": "dark",
@@ -49,6 +50,7 @@
     "jsEngine": "hermes",
     "android": {
       "package": "com.oriontv",
+      "versionCode": 8,
       "usesCleartextTraffic": true,
       "hardwareAcceleration": true,
       "largeHeap": true,
