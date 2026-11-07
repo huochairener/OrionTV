@@ -12,10 +12,17 @@ import {
   filterDanmakuSources,
   findSpawnIndex,
   formatDanmakuSourceLabel,
+  collectActiveDanmaku,
+  danmakuScrollProgress,
+  fixedDanmakuOpacity,
   interpolateVideoTime,
+  isDanmakuActive,
   matchDanmakuEpisode,
+  parseDanmakuCommentsPayload,
+  parseDanmakuXmlComments,
   pickDanmakuTrack,
   progressFromTranslateX,
+  reconcileVideoClock,
   remainingScrollMs,
   scrollTranslateX,
   shouldRefreshVideoClock,
@@ -138,6 +145,75 @@ describe("interpolateVideoTime", () => {
       1_500
     );
     expect(time).toBeCloseTo(11);
+  });
+});
+
+describe("danmaku follows video time", () => {
+  it("滚动进度只由视频时间决定，卡顿或倍速时不会按墙钟继续往前跑", () => {
+    expect(danmakuScrollProgress(10, 10, 8)).toBeCloseTo(0);
+    expect(danmakuScrollProgress(10, 14, 8)).toBeCloseTo(0.5);
+    expect(danmakuScrollProgress(10, 11, 8)).toBeCloseTo(0.125);
+    expect(danmakuScrollProgress(10, 18, 8)).toBeCloseTo(1);
+  });
+
+  it("还没到点或已经离开画面的弹幕不算在屏", () => {
+    expect(isDanmakuActive(10, 9.9, 8)).toBe(false);
+    expect(isDanmakuActive(10, 10, 8)).toBe(true);
+    expect(isDanmakuActive(10, 17.9, 8)).toBe(true);
+    expect(isDanmakuActive(10, 18, 8)).toBe(false);
+  });
+
+  it("固定弹幕的透明度跟着视频时间淡入淡出", () => {
+    expect(fixedDanmakuOpacity(10, 10, 4.2, 0.8)).toBeCloseTo(0);
+    expect(fixedDanmakuOpacity(10, 10.2, 4.2, 0.8)).toBeCloseTo(0.4);
+    expect(fixedDanmakuOpacity(10, 12, 4.2, 0.8)).toBeCloseTo(0.8);
+    expect(fixedDanmakuOpacity(10, 14, 4.2, 0.8)).toBeCloseTo(0.4);
+    expect(fixedDanmakuOpacity(10, 14.2, 4.2, 0.8)).toBeCloseTo(0);
+  });
+
+  it("当前画面上保留最接近播放时间的弹幕，并丢掉已经滚完的", () => {
+    const comments = [
+      comment({ text: "太早", time: 1 }),
+      comment({ text: "仍在", time: 7 }),
+      comment({ text: "刚刚", time: 9.5 }),
+      comment({ text: "现在", time: 10 }),
+      comment({ text: "未来", time: 11 }),
+    ];
+    const active = collectActiveDanmaku(comments, 10, 2);
+    expect(active.map((item) => item.text)).toEqual(["刚刚", "现在"]);
+  });
+
+  it("顶部弹幕按较短的停留时间离开，不占满滚动弹幕的 8 秒", () => {
+    const comments = [comment({ text: "顶", time: 6, mode: 1 })];
+    expect(collectActiveDanmaku(comments, 10, 8)).toHaveLength(1);
+    expect(collectActiveDanmaku(comments, 10.2, 8)).toHaveLength(0);
+  });
+});
+
+describe("reconcileVideoClock", () => {
+  const clock = { time: 10, wall: 1_000, playing: true, rate: 1 };
+
+  it("进度只差一点点时向播放器靠拢，避免每拍都把位置打回去", () => {
+    const next = reconcileVideoClock(clock, { videoTime: 10.3, playing: true, rate: 1 }, 1_500);
+    expect(next.time).toBeCloseTo(10.4);
+    expect(next.wall).toBe(1_500);
+    expect(next.playing).toBe(true);
+  });
+
+  it("跳转这种大偏差直接对齐到播放器时间", () => {
+    const next = reconcileVideoClock(clock, { videoTime: 30, playing: true, rate: 1 }, 1_500);
+    expect(next.time).toBe(30);
+    expect(next.wall).toBe(1_500);
+  });
+
+  it("暂停时停在播放器报的时间上", () => {
+    const next = reconcileVideoClock(clock, { videoTime: 10.2, playing: false, rate: 1 }, 1_800);
+    expect(next).toEqual({ time: 10.2, wall: 1_800, playing: false, rate: 1 });
+  });
+
+  it("倍速变化时改按新倍率对齐，不再沿用旧的 1 倍外推", () => {
+    const next = reconcileVideoClock(clock, { videoTime: 10.5, playing: true, rate: 2 }, 1_500);
+    expect(next).toEqual({ time: 10.5, wall: 1_500, playing: true, rate: 2 });
   });
 });
 
@@ -322,5 +398,62 @@ describe("pickDanmakuTrack overlap", () => {
   it("允许重叠时仍挤到最空闲轨道", () => {
     const tracks = [10, 9, 10];
     expect(pickDanmakuTrack(10.5, 0, tracks, 1.1, true)).toBe(1);
+  });
+});
+
+describe("parseDanmakuCommentsPayload", () => {
+  it("JSON 响应（代理模式 / 支持 json 的上游）原样归一化", () => {
+    const payload = JSON.stringify({
+      count: 2,
+      comments: [
+        { p: "1.5,1,25,16777215,0,0,0,101", m: "第一条", cid: 101 },
+        { p: "3,1,25,16777215,0,0,0,102", m: "第二条", cid: 102 },
+      ],
+    });
+    const result = parseDanmakuCommentsPayload(payload);
+    expect(result.count).toBe(2);
+    expect(result.comments).toHaveLength(2);
+    expect(result.comments[0].m).toBe("第一条");
+  });
+
+  it("JSON 响应缺失 count 时回退为弹幕条数", () => {
+    const payload = JSON.stringify({ comments: [{ p: "1,1,25,16777215", m: "x", cid: 1 }] });
+    const result = parseDanmakuCommentsPayload(payload);
+    expect(result.count).toBe(1);
+  });
+
+  it("bilibili 风格弹幕 XML（dandanplay 兼容上游默认格式）能解析出 p/m/cid", () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<i>
+  <chatserver>chat.bilibili.com</chatserver>
+  <d p="6.0,1,25,16777215,1528,0,0,8616181">前方高能</d>
+  <d p="10.5,5,25,16711680,3163,0,0,8616182">&lt; xml &amp; 转义 &quot;ok&quot;</d>
+</i>`;
+    const result = parseDanmakuCommentsPayload(xml);
+    expect(result.count).toBe(2);
+    expect(result.comments[0]).toEqual({ p: "6.0,1,25,16777215,1528,0,0,8616181", m: "前方高能", cid: 8616181 });
+    expect(result.comments[1].m).toBe(`< xml & 转义 "ok"`);
+    expect(result.comments[1].cid).toBe(8616182);
+  });
+
+  it("parseDanmakuXmlComments 对 p 后有额外属性的标签仍能解析", () => {
+    const xml = `<i><d user="u1" p="1,4,25,16777215,0,0,0,7">底部弹幕</d></i>`;
+    const comments = parseDanmakuXmlComments(xml);
+    expect(comments).toHaveLength(1);
+    expect(comments[0].m).toBe("底部弹幕");
+    expect(comments[0].cid).toBe(7);
+  });
+
+  it("无法解析的响应体返回空列表而不是抛错", () => {
+    const result = parseDanmakuCommentsPayload("<html>Service Unavailable</html>");
+    expect(result.count).toBe(0);
+    expect(result.comments).toEqual([]);
+  });
+
+  it("XML 弹幕可继续走 convertDanmakuFormat 转为展示格式", () => {
+    const xml = `<i><d p="6.0,1,25,16777215,0,0,0,1">hello</d></i>`;
+    const { comments } = parseDanmakuCommentsPayload(xml);
+    const display = convertDanmakuFormat(comments);
+    expect(display).toEqual([{ text: "hello", time: 6, color: "#ffffff", mode: 0 }]);
   });
 });

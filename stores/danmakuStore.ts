@@ -93,6 +93,7 @@ interface DanmakuState {
   selection: DanmakuSelection | null;
   searchKeyword: string;
   searchError: string | null;
+  probing: boolean;
   videoTitle: string;
   videoYear?: string;
   episodeIndex: number;
@@ -117,8 +118,15 @@ interface DanmakuState {
     episodeIndex: number;
     episodeTitle?: string;
   }) => Promise<void>;
-  search: (keyword?: string) => Promise<void>;
-  applyRichestSource: (animes: DanmakuAnime[], loadToken: number) => Promise<void>;
+  search: (
+    keyword?: string,
+    options?: { fromUser?: boolean }
+  ) => Promise<{ animes: DanmakuAnime[]; all: DanmakuAnime[] } | null>;
+  applyRichestSource: (
+    animes: DanmakuAnime[],
+    loadToken: number,
+    fallbackAnimes?: DanmakuAnime[]
+  ) => Promise<void>;
   selectAnime: (anime: DanmakuAnime, sourceIndex?: number) => Promise<void>;
   selectEpisode: (episode: DanmakuEpisode) => Promise<void>;
   loadComments: (episodeId: number, selection: DanmakuSelection, options?: { silent?: boolean }) => Promise<void>;
@@ -126,6 +134,7 @@ interface DanmakuState {
 
 const emptyState = {
   loading: false,
+  probing: false,
   comments: [] as DisplayDanmaku[],
   count: 0,
   sources: [] as DanmakuAnime[],
@@ -147,6 +156,7 @@ const useDanmakuStore = create<DanmakuState>((set, get) => ({
   selection: null,
   searchKeyword: "",
   searchError: null,
+  probing: false,
   videoTitle: "",
   videoYear: undefined,
   episodeIndex: 0,
@@ -175,9 +185,9 @@ const useDanmakuStore = create<DanmakuState>((set, get) => ({
   setShowModal: (show) => set({ showModal: show }),
   openModal: () => {
     set({ showModal: true });
-    const { sources, videoTitle, searchKeyword } = get();
-    if (!sources.length && (searchKeyword || videoTitle)) {
-      get().search(searchKeyword || videoTitle);
+    const { sources, videoTitle, searchKeyword, searchError, loading } = get();
+    if (!sources.length && !searchError && !loading && (searchKeyword || videoTitle)) {
+      get().search(searchKeyword || videoTitle, { fromUser: true });
     }
   },
   setSearchKeyword: (keyword) => set({ searchKeyword: keyword }),
@@ -211,9 +221,13 @@ const useDanmakuStore = create<DanmakuState>((set, get) => ({
       ...(titleChanged ? { selection: null, selectedAnime: null, episodes: [], sources: [] } : {}),
     });
 
-    if (!title) return;
+    if (!title) {
+      // 空标题时没有后续加载流程接管 loading，在此复位，避免搜索按钮永久禁用
+      set({ loading: false });
+      return;
+    }
 
-    const { selection, sources, selectedAnime, episodes } = get();
+    const { selection, selectedAnime, episodes } = get();
     if (!titleChanged && selectedAnime && episodes.length > 0) {
       const episode = matchDanmakuEpisode(episodeIndex, episodes, episodeTitle);
       if (episode) {
@@ -234,27 +248,54 @@ const useDanmakuStore = create<DanmakuState>((set, get) => ({
       return;
     }
 
-    await get().search(title);
+    const result = await get().search(title);
     if (get().loadToken !== loadToken) return;
-    const matched = get().sources;
+    const matched = result?.animes ?? [];
     if (matched.length === 0) {
       showNoDanmakuToast();
       return;
     }
-    await get().applyRichestSource(matched, loadToken);
+    await get().applyRichestSource(matched, loadToken, result?.all);
   },
 
-  applyRichestSource: async (animes, loadToken) => {
+  applyRichestSource: async (animes, loadToken, fallbackAnimes) => {
+    // 注意：下方 loadToken 过期时的提前 return 不会复位 loading。
+    // 这是有意的：此时必然有更新的搜索持有新的 loadToken，由它负责把 loading 置回 false。
+    // 新增任何会 loadToken + 1 的入口时，必须保证该入口自己会把 loading 复位。
     set({ loading: true });
-    const probed = await probeDanmakuSources(animes, get().episodeIndex, get().videoEpisodeTitle);
+    let probed = await probeDanmakuSources(animes, get().episodeIndex, get().videoEpisodeTitle);
 
     if (get().loadToken !== loadToken) {
-      set({ loading: false });
       return;
     }
 
-    const sourcesWithCounts = mergeCommentCounts(get().sources, probed);
-    const best = probed.reduce((winner, item) => (item.count > winner.count ? item : winner), probed[0]);
+    let sourcesWithCounts = mergeCommentCounts(get().sources.length ? get().sources : animes, probed);
+    let best = probed.reduce((winner, item) => (item.count > winner.count ? item : winner), probed[0]);
+
+    if ((!best || !best.episode || best.count === 0) && fallbackAnimes?.length) {
+      const usedIds = new Set(animes.map((item) => item.animeId));
+      const rest = fallbackAnimes.filter((item) => !usedIds.has(item.animeId));
+      if (rest.length) {
+        const extra = await probeDanmakuSources(rest, get().episodeIndex, get().videoEpisodeTitle);
+        if (get().loadToken !== loadToken) {
+          return;
+        }
+        const currentSources = sourcesWithCounts.length ? sourcesWithCounts : animes;
+        const combined = [
+          ...currentSources,
+          ...rest.filter((item) => !currentSources.some((s) => s.animeId === item.animeId)),
+        ];
+        sourcesWithCounts = mergeCommentCounts(combined, extra);
+        const extraBest = extra.reduce(
+          (winner, item) => (item.count > winner.count ? item : winner),
+          extra[0]
+        );
+        if (extraBest && extraBest.count > (best?.count || 0)) {
+          best = extraBest;
+        }
+      }
+    }
+
     if (!best || !best.episode || best.count === 0) {
       set({ loading: false, comments: [], count: 0, sources: sourcesWithCounts });
       showNoDanmakuToast();
@@ -281,50 +322,109 @@ const useDanmakuStore = create<DanmakuState>((set, get) => ({
     showDanmakuReadyToast(best.count);
   },
 
-  search: async (keyword) => {
+  search: async (keyword, options) => {
+    // fromUser 时递增 loadToken 使进行中的旧搜索全部过期；
+    // 过期分支的提前 return 不复位 loading，由持有最新 loadToken 的操作负责复位
+    const fromUser = options?.fromUser === true;
     const query = (keyword ?? get().searchKeyword).trim();
     if (!query) {
-      set({ searchError: "请输入搜索关键词" });
-      return;
+      const searchError = "请输入搜索关键词";
+      set({ searchError });
+      return null;
     }
-    const loadToken = get().loadToken;
-    set({ loading: true, searchError: null, searchKeyword: query, selectedAnime: null, episodes: [] });
+    const loadToken = fromUser ? get().loadToken + 1 : get().loadToken;
+    const filterTitle = fromUser ? query : get().videoTitle || query;
+    const filterYear = fromUser && query !== get().videoTitle ? undefined : get().videoYear;
+    set({
+      loading: true,
+      probing: false,
+      searchError: null,
+      searchKeyword: query,
+      selectedAnime: null,
+      episodes: [],
+      ...(fromUser ? { loadToken, sources: [] } : {}),
+    });
     try {
-      const response = await api.searchDanmaku(query);
-      if (get().loadToken !== loadToken) {
-        set({ loading: false });
-        return;
+      let response;
+      let retryCount = 0;
+      const maxRetries = 2;
+
+      while (retryCount <= maxRetries) {
+        if (retryCount > 0) {
+          // 指数退避（300ms/600ms），避免网络抖动时重试请求紧挨着发出
+          await new Promise((r) => setTimeout(r, 300 * retryCount));
+        }
+        try {
+          logger.info(`Searching danmaku for "${query}" (attempt ${retryCount + 1}/${maxRetries + 1})`);
+          response = await api.searchDanmaku(query);
+          if (response && response.success) {
+            break;
+          }
+          if (retryCount < maxRetries) {
+            logger.warn("Search returned unsuccessful, retrying...", response);
+            retryCount++;
+          } else {
+            logger.error("All search attempts failed", response);
+            break;
+          }
+        } catch (error) {
+          logger.error(`Search attempt ${retryCount + 1} failed:`, error);
+          if (retryCount >= maxRetries) {
+            throw error;
+          }
+          retryCount++;
+        }
       }
+
+      if (get().loadToken !== loadToken) {
+        logger.info("Search cancelled (loadToken changed)");
+        return null;
+      }
+
+      if (!response) {
+        throw new Error("No response from danmaku API");
+      }
+
       if (response.success && response.animes?.length) {
-        const filtered = filterDanmakuSources(response.animes, get().videoTitle || query, get().videoYear);
-        if (!get().showModal) {
-          set({ sources: filtered, loading: false });
-          return;
+        const filtered = filterDanmakuSources(response.animes, filterTitle, filterYear);
+        const list = filtered.length ? filtered : response.animes;
+        set({ sources: list, loading: false, showModal: fromUser ? true : get().showModal });
+        if (get().showModal) {
+          set({ probing: true });
+          try {
+            const probed = await probeDanmakuSources(list, get().episodeIndex, get().videoEpisodeTitle);
+            if (get().loadToken !== loadToken) {
+              set({ probing: false });
+              return { animes: list, all: response.animes };
+            }
+            set({ sources: mergeCommentCounts(list, probed), probing: false });
+          } catch (probeError) {
+            logger.error("Failed to probe danmaku sources", probeError);
+            set({ probing: false });
+          }
         }
-        const probed = await probeDanmakuSources(filtered, get().episodeIndex, get().videoEpisodeTitle);
-        if (get().loadToken !== loadToken) {
-          set({ loading: false });
-          return;
-        }
-        set({ sources: mergeCommentCounts(filtered, probed), loading: false });
-      } else {
-        set({
-          sources: [],
-          loading: false,
-          searchError: response.errorMessage || "未找到匹配的弹幕源",
-        });
+        return { animes: list, all: response.animes };
       }
-    } catch (error) {
-      logger.error("search danmaku failed", error);
-      if (get().loadToken !== loadToken) {
-        set({ loading: false });
-        return;
-      }
+      const searchError =
+        response.errorMessage || (fromUser ? "未找到相关弹幕源，请更换关键词重试" : "未找到匹配的弹幕源");
       set({
         sources: [],
         loading: false,
-        searchError: "弹幕搜索失败，请检查后端弹幕配置",
+        searchError,
       });
+      return { animes: [], all: [] };
+    } catch (error) {
+      logger.error("search danmaku failed", error);
+      if (get().loadToken !== loadToken) {
+        return null;
+      }
+      const searchError = "弹幕搜索失败，请检查后端弹幕配置";
+      set({
+        sources: [],
+        loading: false,
+        searchError,
+      });
+      return null;
     }
   },
 
@@ -335,7 +435,6 @@ const useDanmakuStore = create<DanmakuState>((set, get) => ({
       const response = await api.getDanmakuEpisodes(anime.animeId);
       const list = response.bangumi?.episodes || [];
       if (get().loadToken !== loadToken) {
-        set({ loading: false });
         return;
       }
       if (response.success && list.length > 0) {
@@ -351,7 +450,6 @@ const useDanmakuStore = create<DanmakuState>((set, get) => ({
     } catch (error) {
       logger.error("get danmaku episodes failed", error);
       if (get().loadToken !== loadToken) {
-        set({ loading: false });
         return;
       }
       set({ episodes: [], loading: false, searchError: "获取弹幕分集失败" });
@@ -378,7 +476,6 @@ const useDanmakuStore = create<DanmakuState>((set, get) => ({
     try {
       const response = await api.getDanmakuComments(episodeId);
       if (get().loadToken !== loadToken) {
-        set({ loading: false });
         return;
       }
       const comments = convertDanmakuFormat(response.comments || []);
@@ -403,7 +500,6 @@ const useDanmakuStore = create<DanmakuState>((set, get) => ({
     } catch (error) {
       logger.error("load danmaku comments failed", error);
       if (get().loadToken !== loadToken) {
-        set({ loading: false });
         return;
       }
       set({ comments: [], count: 0, loading: false, searchError: "加载弹幕失败" });

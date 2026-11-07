@@ -4,7 +4,7 @@ import { Pause, Play, SkipForward, List, Tv, ArrowDownToDot, ArrowUpFromDot, Gau
 import { ThemedText } from "@/components/ThemedText";
 import { MediaButton } from "@/components/MediaButton";
 import { FontAwesome } from "@expo/vector-icons";
-import { StyledButton } from "./StyledButton";
+import { LinearGradient } from "expo-linear-gradient";
 
 import usePlayerStore from "@/stores/playerStore";
 import useDetailStore from "@/stores/detailStore";
@@ -14,6 +14,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import {Battery} from '@brightlayer-ui/react-native-progress-icons';
 import { useBatteryLevel, useBatteryState, BatteryState } from 'expo-battery';
 import { format } from 'date-fns';
+import { ProgressBar } from "@/components/ProgressBar";
 import useDanmakuStore from "@/stores/danmakuStore";
 
 interface PlayerControlsProps {
@@ -34,8 +35,6 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, se
     toggleLock,
     isSeeking,
     seekPosition,
-    progressPosition,
-    bufferedPosition,
     playbackRate,
     togglePlayPause,
     playEpisode,
@@ -57,7 +56,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, se
   const currentEpisode = episodes[currentEpisodeIndex];
   const currentEpisodeTitle = currentEpisode?.title;
   const currentSource = resources.find((r) => r.source === detail?.source);
-  const currentSourceName = currentSource?.source_name;
+  const currentSourceName = currentSource?.source_name || detail?.source_name;
   const hasNextEpisode = currentEpisodeIndex < (episodes.length || 0) - 1;
 
   const formatTime = (milliseconds: number) => {
@@ -90,148 +89,154 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, se
   const durationMillis = status.durationMillis || 0;
   const seekPositionMillis = seekPosition * durationMillis;
   const { openModal: openDanmakuModal, enabled: danmakuEnabled, count: danmakuCount } = useDanmakuStore();
+  const compact = !Platform.isTV;
+  const iconSize = compact ? 18 : 24;
+  const playIconSize = compact ? 20 : 24;
+  const currentTimeLabel = status?.isLoaded
+    ? formatTime(isSeeking ? seekPositionMillis : status.positionMillis)
+    : "00:00";
+  const durationLabel = status?.isLoaded ? formatTime(status.durationMillis || 0) : "00:00";
+  const titleText = `${videoTitle}${episodes.length > 1 && currentEpisodeTitle ? ` - ${currentEpisodeTitle}` : ""}${
+    currentSourceName ? ` (${currentSourceName})` : ""
+  }`;
+
+  const actionButtons = (
+    <View style={compact ? styles.bottomControlsCompact : styles.bottomControls}>
+      {episodes.length > 1 && (
+        <MediaButton onPress={setIntroEndTime} timeLabel={introEndTime ? formatTime(introEndTime) : undefined}>
+          <ArrowDownToDot color="white" size={iconSize} />
+        </MediaButton>
+      )}
+
+      <MediaButton onPress={togglePlayPause} hasTVPreferredFocus={showControls}>
+        {status?.isLoaded && status.isPlaying ? (
+          <Pause color="white" size={playIconSize} />
+        ) : (
+          <Play color="white" size={playIconSize} />
+        )}
+      </MediaButton>
+
+      {episodes.length > 1 && (
+        <MediaButton onPress={onPlayNextEpisode} disabled={!hasNextEpisode}>
+          <SkipForward color={hasNextEpisode ? "white" : "#666"} size={iconSize} />
+        </MediaButton>
+      )}
+
+      {episodes.length > 1 && (
+        <MediaButton onPress={setOutroStartTime} timeLabel={outroStartTime ? formatTime(outroStartTime) : undefined}>
+          <ArrowUpFromDot color="white" size={iconSize} />
+        </MediaButton>
+      )}
+
+      {episodes.length > 1 && (
+        <MediaButton onPress={() => setShowEpisodeModal(true)}>
+          <List color="white" size={iconSize} />
+        </MediaButton>
+      )}
+
+      <MediaButton onPress={() => setShowSourceModal(true)}>
+        <Tv color="white" size={iconSize} />
+      </MediaButton>
+
+      <MediaButton onPress={() => setShowSpeedModal(true)} timeLabel={playbackRate !== 1.0 ? `${playbackRate}x` : undefined}>
+        <Gauge color="white" size={iconSize} />
+      </MediaButton>
+
+      <MediaButton onPress={openDanmakuModal} timeLabel={danmakuCount > 0 ? `${danmakuCount}` : undefined}>
+        <MessageCircle color={danmakuEnabled ? "#00bb5e" : "white"} size={iconSize} />
+      </MediaButton>
+
+      <MediaButton onPress={toggleFavorite}>
+        <FontAwesome
+          name={isFavorited ? "heart" : "heart-o"}
+          size={compact ? 16 : 20}
+          color={isFavorited ? "#feff5f" : "#ccc"}
+        />
+      </MediaButton>
+    </View>
+  );
 
   return (
-    <View style={styles.controlContainer}>
-      <View style={styles.topLeftContainer}>
-        {!Platform.isTV && !showLockControls && (
-          <Pressable onPress={handelBack} style={styles.topBackButton}>
-            <ChevronLeft color="white" size={26} />
-          </Pressable>
-        )}
-        <Text style={styles.topTitleText}>
-          {videoTitle} {episodes.length > 1 && currentEpisodeTitle ? `- ${currentEpisodeTitle}` : ""}{" "}
-          {currentSourceName ? `(${currentSourceName})` : ""}
-        </Text>
-        {/^http/.test(m3u8Proxy) && (
-          <Rocket color="#00bb5e" size={18}/>
-        )}
-      </View>
-      <View style={styles.topRightContainer}>
-        <Text style={styles.topTimeText}>
-          {format(new Date(), 'HH:mm')}
-        </Text>
-        {!Platform.isTV && (<Battery percent={batteryLevel*100} size={30} color={'#00bb5ea0'} charging={batteryState === BatteryState.CHARGING} outlined={false}/>)}
-      </View>
-      {!Platform.isTV && (
-        <View style={styles.lockContainer}>
-          <StyledButton onPress={toggleLock} variant="ghost">
-            {showLockControls && (<Lock color="white" size={20} />)}
-            {!showLockControls && (<Unlock color="white" size={20} />)}
-          </StyledButton>
-        </View>
-      )}
+    <View style={styles.controlContainer} pointerEvents="box-none">
       {!showLockControls && (
-        <View style={styles.controlsOverlay}>
-          <View style={styles.bottomControlsContainer}>
-            <View style={styles.bottomTimesContainer}>
-              <ThemedText style={{ color: "white", marginTop: 5 }}>
-                {status?.isLoaded
-                  ? `${formatTime(isSeeking ? seekPositionMillis : status.positionMillis)} / ${formatTime(status.durationMillis || 0)}`
-                  : "00:00 / 00:00"}
-              </ThemedText>
-            </View>
-
-            <View style={styles.progressBarContainer}>
-              <View style={styles.progressBarBackground} />
-              <View
-                style={[
-                  styles.bufferedBarFilled,
-                  {
-                    width: `${bufferedPosition * 100}%`,
-                  },
-                ]}
+        <LinearGradient
+          colors={["rgba(0,0,0,0.72)", "transparent"]}
+          style={compact ? styles.topBarCompact : styles.topBar}
+          pointerEvents="box-none"
+        >
+          <View style={styles.topRow} pointerEvents="box-none">
+            {compact && (
+              <Pressable onPress={handelBack} style={styles.topBackButton} hitSlop={8}>
+                <ChevronLeft color="white" size={22} />
+              </Pressable>
+            )}
+            <Text style={compact ? styles.topTitleTextCompact : styles.topTitleText} numberOfLines={1} ellipsizeMode="tail">
+              {titleText}
+            </Text>
+            {/^http/.test(m3u8Proxy) && <Rocket color="#00bb5e" size={compact ? 14 : 18} />}
+            <Text style={compact ? styles.topTimeTextCompact : styles.topTimeText}>
+              {format(new Date(), "HH:mm")}
+            </Text>
+            {compact && (
+              <Battery
+                percent={batteryLevel * 100}
+                size={20}
+                color={"#00bb5ea0"}
+                charging={batteryState === BatteryState.CHARGING}
+                outlined={false}
               />
-              <View
-                style={[
-                  styles.progressBarFilled,
-                  {
-                    width: `${(isSeeking ? seekPosition : progressPosition) * 100}%`,
-                  },
-                ]}
-              />
-              <Pressable style={styles.progressBarTouchable} />
-            </View>
-
-            <View style={styles.bottomControls}>
-              {episodes.length > 1 && (
-                <MediaButton onPress={setIntroEndTime} timeLabel={introEndTime ? formatTime(introEndTime) : undefined}>
-                  <ArrowDownToDot color="white" size={24} />
-                </MediaButton>
-              )}
-
-              <MediaButton onPress={togglePlayPause} hasTVPreferredFocus={showControls}>
-                {status?.isLoaded && status.isPlaying ? (
-                  <Pause color="white" size={24} />
-                ) : (
-                  <Play color="white" size={24} />
-                )}
-              </MediaButton>
-
-              {episodes.length > 1 && (
-                <MediaButton onPress={onPlayNextEpisode} disabled={!hasNextEpisode}>
-                  <SkipForward color={hasNextEpisode ? "white" : "#666"} size={24} />
-                </MediaButton>
-              )}
-
-              {episodes.length > 1 && (
-                <MediaButton onPress={setOutroStartTime} timeLabel={outroStartTime ? formatTime(outroStartTime) : undefined}>
-                  <ArrowUpFromDot color="white" size={24} />
-                </MediaButton>
-              )}
-
-              {episodes.length > 1 && (
-                <MediaButton onPress={() => setShowEpisodeModal(true)}>
-                  <List color="white" size={24} />
-                </MediaButton>
-              )}
-
-              <MediaButton onPress={() => setShowSourceModal(true)}>
-                <Tv color="white" size={24} />
-              </MediaButton>
-
-              <MediaButton onPress={() => setShowSpeedModal(true)} timeLabel={playbackRate !== 1.0 ? `${playbackRate}x` : undefined}>
-                <Gauge color="white" size={24} />
-              </MediaButton>
-
-              <MediaButton onPress={openDanmakuModal} timeLabel={danmakuCount > 0 ? `${danmakuCount}` : undefined}>
-                <MessageCircle color={danmakuEnabled ? "#00bb5e" : "white"} size={24} />
-              </MediaButton>
-
-              <MediaButton onPress={toggleFavorite}>
-                <FontAwesome
-                    name={isFavorited ? "heart" : "heart-o"}
-                    size={20}
-                    color={isFavorited ? "#feff5f" : "#ccc"}
-                  />
-              </MediaButton>
-            </View>
+            )}
           </View>
+        </LinearGradient>
+      )}
+
+      {compact && (
+        <View style={styles.lockContainer} pointerEvents="box-none">
+          <Pressable onPress={toggleLock} style={styles.lockButton} hitSlop={8}>
+            {showLockControls ? <Lock color="white" size={16} /> : <Unlock color="white" size={16} />}
+          </Pressable>
         </View>
       )}
+
+      {!showLockControls && (
+        <LinearGradient
+          colors={["transparent", "rgba(0,0,0,0.82)"]}
+          style={compact ? styles.controlsOverlayCompact : styles.controlsOverlay}
+        >
+          {compact ? (
+            <>
+              <View style={styles.progressRow}>
+                <Text style={styles.inlineTime}>{currentTimeLabel}</Text>
+                <ProgressBar />
+                <Text style={styles.inlineTime}>{durationLabel}</Text>
+              </View>
+              {actionButtons}
+            </>
+          ) : (
+            <View style={styles.bottomControlsContainer}>
+              <View style={styles.bottomTimesContainer}>
+                <ThemedText style={{ color: "white", marginTop: 5 }}>
+                  {currentTimeLabel} / {durationLabel}
+                </ThemedText>
+              </View>
+              <ProgressBar />
+              {actionButtons}
+            </View>
+          )}
+        </LinearGradient>
+      )}
+
       {showLockControls && (
-        <View style={styles.lockBottomBarContainer}>
-          <View style={{...styles.progressBarContainer, marginTop: 0}}>
-            <View style={styles.progressBarBackground} />
-            <View
-              style={[
-                styles.bufferedBarFilled,
-                {
-                  width: `${bufferedPosition * 100}%`,
-                },
-              ]}
-            />
-            <View
-              style={[
-                styles.progressBarFilled,
-                {
-                  width: `${(isSeeking ? seekPosition : progressPosition) * 100}%`,
-                },
-              ]}
-            />
-            <Pressable style={styles.progressBarTouchable} />
+        <LinearGradient
+          colors={["transparent", "rgba(0,0,0,0.65)"]}
+          style={styles.lockBottomBarContainer}
+        >
+          <View style={styles.progressRow}>
+            <Text style={styles.inlineTime}>{currentTimeLabel}</Text>
+            <ProgressBar />
+            <Text style={styles.inlineTime}>{durationLabel}</Text>
           </View>
-        </View>
+        </LinearGradient>
       )}
     </View>
   );
@@ -239,26 +244,100 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, se
 
 const styles = StyleSheet.create({
   controlContainer: {
-    position: 'absolute',
+    position: "absolute",
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
+    zIndex: 20,
+    pointerEvents: "box-none",
+  },
+  topBar: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    paddingTop: 16,
+    paddingHorizontal: 16,
+    paddingBottom: 20,
+  },
+  topBarCompact: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    paddingTop: 4,
+    paddingHorizontal: 8,
+    paddingBottom: 18,
+  },
+  topRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  topTitleText: {
+    flex: 1,
+    color: "white",
+    fontSize: 16,
+    fontWeight: "bold",
+    marginRight: 8,
+  },
+  topTitleTextCompact: {
+    flex: 1,
+    color: "white",
+    fontSize: 13,
+    fontWeight: "600",
+    marginHorizontal: 4,
+  },
+  topBackButton: {
+    padding: 2,
+    marginRight: 2,
+  },
+  topTimeText: {
+    color: "white",
+    fontSize: 16,
+    fontWeight: "bold",
+    marginLeft: 8,
+    marginRight: 6,
+  },
+  topTimeTextCompact: {
+    color: "rgba(255,255,255,0.9)",
+    fontSize: 12,
+    fontWeight: "600",
+    marginLeft: 8,
+    marginRight: 6,
   },
   controlsOverlay: {
-    position: 'absolute',
+    position: "absolute",
     bottom: 0,
-    width: '100%',
-    backgroundColor: "rgba(0, 0, 0, 0.4)",
-    justifyContent: "space-between",
+    width: "100%",
     padding: 20,
+  },
+  controlsOverlayCompact: {
+    position: "absolute",
+    bottom: 0,
+    width: "100%",
+    paddingHorizontal: 10,
+    paddingTop: 20,
+    paddingBottom: 6,
   },
   bottomControlsContainer: {
     width: "100%",
     alignItems: "center",
   },
   bottomTimesContainer: {
-    width: '100%',
+    width: "100%",
+  },
+  progressRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    width: "100%",
+  },
+  inlineTime: {
+    color: "white",
+    fontSize: 11,
+    fontVariant: ["tabular-nums"],
+    minWidth: 40,
+    textAlign: "center",
   },
   bottomControls: {
     flexDirection: "row",
@@ -268,100 +347,34 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     marginTop: 15,
   },
-  progressBarContainer: {
-    width: "100%",
-    height: 8,
-    position: "relative",
-    marginTop: 10,
-  },
-  progressBarBackground: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    height: 8,
-    backgroundColor: "rgba(255, 255, 255, 0.3)",
-    borderRadius: 4,
-  },
-  bufferedBarFilled: {
-    position: "absolute",
-    zIndex: 1,
-    left: 0,
-    height: 8,
-    backgroundColor: "rgba(255,255,255,0.5)",
-    borderRadius: 4,
-  },
-  progressBarFilled: {
-    position: "absolute",
-    zIndex: 2,
-    left: 0,
-    height: 8,
-    backgroundColor: "#00bb5e",
-    borderRadius: 4,
-  },
-  progressBarTouchable: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    height: 30,
-    top: -10,
-    zIndex: 10,
-  },
-  controlButton: {
-    padding: 10,
+  bottomControlsCompact: {
     flexDirection: "row",
+    justifyContent: "space-evenly",
     alignItems: "center",
-  },
-  resolutionText: {
-    color: "white",
-    fontSize: 16,
-    fontWeight: "bold",
-    backgroundColor: "rgba(0,0,0,0.5)",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  topTitleText: {
-    color: "white",
-    fontSize: 16,
-    fontWeight: "bold",
-    marginRight: 5,
-  },
-  topLeftContainer: {
-    position: "absolute",
-    top:20,
-    left: 10,
-    display: 'flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  topBackButton: {
-    padding: 5,
-  },
-  topTimeText: {
-    color: "white",
-    fontSize: 16,
-    fontWeight: "bold",
-    marginRight: 5,
-  },
-  topRightContainer: {
-    position: "absolute",
-    display: 'flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-    top:20,
-    right: 10,
+    marginTop: 2,
+    width: "100%",
   },
   lockContainer: {
     position: "absolute",
-    left:0,
-    top: '50%',
-    marginTop: -35,
+    left: 4,
+    top: "50%",
+    marginTop: -16,
     zIndex: 999,
   },
+  lockButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(0,0,0,0.35)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   lockBottomBarContainer: {
-    position: 'absolute',
+    position: "absolute",
     bottom: 0,
-    width: '100%',
-    justifyContent: "space-between",
-  }
+    width: "100%",
+    paddingHorizontal: 10,
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
 });

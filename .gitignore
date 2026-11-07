@@ -20,9 +20,18 @@ web-build/
 .vscode
 expo-env.d.ts
 # @end expo-cli
-web/** 
+web/**
 .bmad-core
 .kilocodemodes
 .roomodes
 yarn-errors.log
 coverage/
+
+# Build artifacts
+*.apk
+*.aab
+
+# Reference code and mockups
+_ref_*/
+/player-overlay-*.html
+/player-overlay-*.svg

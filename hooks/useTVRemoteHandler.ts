@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useTVEventHandler, HWEvent } from "react-native";
 import usePlayerStore from "@/stores/playerStore";
+import useDanmakuStore from "@/stores/danmakuStore";
 
 const SEEK_STEP = 20 * 1000; // 快进/快退的时间步长（毫秒）
 
@@ -13,6 +14,8 @@ const CONTROLS_TIMEOUT = 5000;
  */
 export const useTVRemoteHandler = () => {
   const { showControls, setShowControls, showEpisodeModal, showSourceModal, showSpeedModal, setShowEpisodeModal, setShowSourceModal, setShowSpeedModal, togglePlayPause, seek, setPlaybackRate } = usePlayerStore();
+  // 订阅弹幕面板状态，保证其开合能驱动下方 effect 重新同步 modalRef
+  const showDanmakuModal = useDanmakuStore((s) => s.showModal);
 
   const controlsTimer = useRef<NodeJS.Timeout | null>(null);
   const fastForwardIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -20,14 +23,16 @@ export const useTVRemoteHandler = () => {
     showEpisodeModal: false,
     showSpeedModal: false,
     showSourceModal: false,
+    showDanmakuModal: false,
   });
-  
+
   // 每次modal变更同步到ref
   useEffect(() => {
     modalRef.current.showEpisodeModal = showEpisodeModal;
     modalRef.current.showSpeedModal = showSpeedModal;
     modalRef.current.showSourceModal = showSourceModal;
-  },[showEpisodeModal, showSpeedModal, showSourceModal])
+    modalRef.current.showDanmakuModal = showDanmakuModal;
+  }, [showEpisodeModal, showSpeedModal, showSourceModal, showDanmakuModal])
   
   // 重置或启动隐藏控件的定时器
   const resetTimer = useCallback(() => {
@@ -45,7 +50,7 @@ export const useTVRemoteHandler = () => {
 
   // 当控件显示时，启动定时器
   useEffect(() => {
-    if (showControls && !showEpisodeModal && !showSourceModal && !showSpeedModal) {
+    if (showControls && !showEpisodeModal && !showSourceModal && !showSpeedModal && !showDanmakuModal) {
       resetTimer();
     }
 
@@ -56,7 +61,7 @@ export const useTVRemoteHandler = () => {
         controlsTimer.current = null;
       }
     };
-  }, [showControls, showEpisodeModal, showSourceModal, showSpeedModal]);
+  }, [showControls, showEpisodeModal, showSourceModal, showSpeedModal, showDanmakuModal]);
 
   // 组件卸载时清除快进定时器
   useEffect(() => {
@@ -71,7 +76,7 @@ export const useTVRemoteHandler = () => {
   const handleTVEvent = useCallback(
     (event: HWEvent) => {
       const m = modalRef.current;
-      if (m.showEpisodeModal || m.showSpeedModal || m.showSourceModal) {
+      if (m.showEpisodeModal || m.showSpeedModal || m.showSourceModal || m.showDanmakuModal) {
         return;
       }
 

@@ -64,9 +64,9 @@ export const SeekingBar = () => {
 const styles = StyleSheet.create({
   seekingContainer: {
     position: "absolute",
-    bottom: 80,
-    left: "5%",
-    right: "5%",
+    bottom: 36,
+    left: "8%",
+    right: "8%",
     alignItems: "center",
   },
   timeText: {

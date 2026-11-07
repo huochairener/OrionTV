@@ -4,8 +4,8 @@ import { FlashList } from "@shopify/flash-list";
 import Modal from "react-native-modal";
 import { StyledButton } from "./StyledButton";
 import { ThemedText } from "@/components/ThemedText";
-import useDetailStore from "@/stores/detailStore";
-import usePlayerStore from "@/stores/playerStore";
+import useDetailStore, { SearchResultWithResolution } from "@/stores/detailStore";
+import usePlayerStore, { isSamePlaySource } from "@/stores/playerStore";
 import Logger from '@/utils/Logger';
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
@@ -28,26 +28,17 @@ export const SourceSelectionModal: React.FC = () => {
   // 动态样式
   const dynamicStyles = createResponsiveStyles(deviceType, spacing);
   
-  const { showSourceModal, setShowSourceModal, loadVideo, currentEpisodeIndex, status } = usePlayerStore();
-  const { searchResults, detail, setDetail, allSourcesLoaded } = useDetailStore();
+  const { showSourceModal, setShowSourceModal, switchSource } = usePlayerStore();
+  const { searchResults, detail, allSourcesLoaded } = useDetailStore();
 
-  const onSelectSource = async (index: number) => {
-    logger.debug("onSelectSource", index, searchResults[index].id, detail?.id);
-    if (searchResults[index].id !== detail?.id) {
-      const newDetail = searchResults[index];
-      setDetail(newDetail);
-      
-      // Reload the video with the new source, preserving current position
-      const currentPosition = status?.isLoaded ? status.positionMillis : undefined;
-      loadVideo({
-        source: newDetail.source,
-        id: newDetail.id.toString(),
-        episodeIndex: currentEpisodeIndex,
-        title: newDetail.title,
-        year: newDetail.year,
-        stype: newDetail.episodes.length > 1 ? 'tv' : 'movie',
-        position: currentPosition
-      });
+  const onSelectSource = async (item: SearchResultWithResolution) => {
+    // 直接使用列表项本身，而不是按 index 回查 searchResults：
+    // 测速会异步重排 searchResults，index 回查可能拿到与界面显示不一致的源
+    if (!item) return;
+    logger.debug("onSelectSource", item.source, item.id, detail?.source, detail?.id);
+    if (!isSamePlaySource(detail, item)) {
+      await switchSource(item);
+      return;
     }
     setShowSourceModal(false);
   };
@@ -67,13 +58,13 @@ export const SourceSelectionModal: React.FC = () => {
           data={searchResults}
           numColumns={Math.floor((responsiveConfig.screenWidth * 0.9) / 250)}
           // keyExtractor={(item, index) => `source-${item.id}-${index}`}
-          extraData={detail?.id}
+          extraData={`${detail?.source}-${detail?.id}`}
           estimatedItemSize={60}
-          renderItem={({ item, index }) => {
-            const isSelected = detail?.source === item.source && detail?.id === item.id;
+          renderItem={({ item }) => {
+            const isSelected = isSamePlaySource(detail, item);
             return (
               <StyledButton
-                onPress={() => onSelectSource(index)}
+                onPress={() => onSelectSource(item)}
                 isSelected={isSelected}
                 hasTVPreferredFocus={isSelected}
                 style={styles.sourceItem}

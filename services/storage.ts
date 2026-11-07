@@ -35,6 +35,7 @@ export interface PlayerSettings {
 export interface AppSettings {
   apiBaseUrl: string;
   m3u8Proxy: string;
+  danmakuApiUrl: string;
   remoteInputEnabled: boolean;
   videoSource: {
     enabledAll: boolean;
@@ -321,6 +322,7 @@ export class SettingsManager {
     const defaultSettings: AppSettings = {
       apiBaseUrl: "",
       m3u8Proxy: '',
+      danmakuApiUrl: "",
       remoteInputEnabled: true,
       videoSource: {
         enabledAll: true,

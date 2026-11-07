@@ -11,6 +11,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { APIConfigSection } from "@/components/settings/APIConfigSection";
 import { M3u8ProxySection } from "@/components/settings/M3u8ProxySection";
+import { DanmakuApiSection } from "@/components/settings/DanmakuApiSection";
 import { RemoteInputSection } from "@/components/settings/RemoteInputSection";
 import { UpdateSection } from "@/components/settings/UpdateSection";
 // import { VideoSourceSection } from "@/components/settings/VideoSourceSection";
@@ -35,7 +36,7 @@ function isSectionItem(
 }
 
 export default function SettingsScreen() {
-  const { loadSettings, saveSettings, setApiBaseUrl, setM3u8Proxy } = useSettingsStore();
+  const { loadSettings, saveSettings, setApiBaseUrl, setM3u8Proxy, setDanmakuApiUrl } = useSettingsStore();
   const { lastMessage, targetPage, clearMessage } = useRemoteControlStore();
   const backgroundColor = useThemeColor({}, "background");
   const insets = useSafeAreaInsets();
@@ -53,6 +54,8 @@ export default function SettingsScreen() {
   const saveButtonRef = useRef<any>(null);
   const apiSectionRef = useRef<any>(null);
   const m3u8ProxySectionRef = useRef<any>(null);
+  const danmakuApiSectionRef = useRef<any>(null);
+  const sectionsRef = useRef<SectionItem[]>([]);
 
   useEffect(() => {
     loadSettings();
@@ -78,6 +81,9 @@ export default function SettingsScreen() {
       // M3u8 proxy Config Section
       setM3u8Proxy(message);
     }
+    else if (currentSection === "danmaku_api" && danmakuApiSectionRef.current) {
+      setDanmakuApiUrl(message);
+    }
   };
 
   const handleSave = async () => {
@@ -98,6 +104,13 @@ export default function SettingsScreen() {
 
   const markAsChanged = () => {
     setHasChanges(true);
+  };
+
+  // TV 焦点索引按 key 反查，避免手写索引在新增分区或 mobile 隐藏分区时错位
+  const focusSection = (key: string) => {
+    setCurrentSection(key);
+    const index = sectionsRef.current.findIndex((item) => item.key === key);
+    setCurrentFocusIndex(index < 0 ? 0 : index);
   };
 
   // const sections = [
@@ -151,8 +164,7 @@ export default function SettingsScreen() {
         <RemoteInputSection
           onChanged={markAsChanged}
           onFocus={() => {
-            setCurrentFocusIndex(0);
-            setCurrentSection("remote");
+            focusSection("remote");
           }}
         />
       ),
@@ -165,8 +177,7 @@ export default function SettingsScreen() {
           onChanged={markAsChanged}
           hideDescription={deviceType === "mobile"}
           onFocus={() => {
-            setCurrentFocusIndex(1);
-            setCurrentSection("api");
+            focusSection("api");
           }}
         />
       ),
@@ -179,12 +190,24 @@ export default function SettingsScreen() {
           onChanged={markAsChanged}
           hideDescription={deviceType === "mobile"}
           onFocus={() => {
-            setCurrentFocusIndex(1);
-            setCurrentSection("m3u8_proxy");
+            focusSection("m3u8_proxy");
           }}
         />
       ),
       key: "m3u8_proxy",
+    },
+    {
+      component: (
+        <DanmakuApiSection
+          ref={danmakuApiSectionRef}
+          onChanged={markAsChanged}
+          hideDescription={deviceType === "mobile"}
+          onFocus={() => {
+            focusSection("danmaku_api");
+          }}
+        />
+      ),
+      key: "danmaku_api",
     },
     Platform.OS === "android" && {
       component: <UpdateSection />,
@@ -193,6 +216,10 @@ export default function SettingsScreen() {
   ] as const; // 把每个对象都当作字面量保留
   /** 这里得到的 sections 已经是 SectionItem[]（没有 false） */
   const sections: SectionItem[] = rawSections.filter(isSectionItem);
+
+  useEffect(() => {
+    sectionsRef.current = sections;
+  });
 
 
   // TV遥控器事件处理 - 仅在TV设备上启用

@@ -60,6 +60,54 @@ export interface DanmakuCommentsResponse {
   comments: DanmakuComment[];
 }
 
+/** 反转义 XML 基本实体，避免弹幕文本显示 &amp; 等字面量 */
+function unescapeXmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * 解析 bilibili 风格的弹幕 XML（上游 /api/v2/comment/* 默认返回格式）。
+ * 参考实现：MoonTV src_app_api_danmaku_comment_route.ts 的 parseXmlDanmaku。
+ */
+export function parseDanmakuXmlComments(xmlText: string): DanmakuComment[] {
+  const comments: DanmakuComment[] = [];
+  const dTagRegex = /<d\s+(?:[^>]*?\s)?p="([^"]+)"[^>]*>([^<]*)<\/d>/g;
+  let match: RegExpExecArray | null;
+  while ((match = dTagRegex.exec(xmlText)) !== null) {
+    const p = match[1];
+    const m = unescapeXmlEntities(match[2]);
+    const pParts = p.split(",");
+    const cid = pParts[7] ? parseInt(pParts[7], 10) : 0;
+    comments.push({ p, m, cid });
+  }
+  return comments;
+}
+
+/**
+ * 归一化弹幕评论响应：优先按 JSON 解析（代理模式、部分支持 json 的上游），
+ * 失败时按 bilibili 风格弹幕 XML 解析（dandanplay 兼容上游的默认格式）。
+ */
+export function parseDanmakuCommentsPayload(payload: string): DanmakuCommentsResponse {
+  try {
+    const json = JSON.parse(payload);
+    const comments = Array.isArray(json?.comments) ? json.comments : [];
+    return {
+      count: typeof json?.count === "number" ? json.count : comments.length,
+      comments,
+    };
+  } catch {
+    // 非响应体 JSON，尝试弹幕 XML
+  }
+  const comments = parseDanmakuXmlComments(payload);
+  return { count: comments.length, comments };
+}
+
 export function convertDanmakuFormat(comments: DanmakuComment[]): DisplayDanmaku[] {
   return comments
     .map((comment) => {
@@ -297,6 +345,89 @@ export function shouldRefreshVideoClock(
   next: VideoClockSyncState
 ): boolean {
   return prev.videoTime !== next.videoTime || prev.playing !== next.playing || prev.rate !== next.rate;
+}
+
+export const VIDEO_CLOCK_SNAP_SEC = 0.75;
+
+export function danmakuScrollProgress(commentTime: number, videoTime: number, duration: number): number {
+  if (!(duration > 0)) return 1;
+  const elapsed = videoTime - commentTime;
+  if (elapsed <= 0) return 0;
+  if (elapsed >= duration) return 1;
+  return elapsed / duration;
+}
+
+export function isDanmakuActive(commentTime: number, videoTime: number, duration: number): boolean {
+  if (!(duration > 0)) return false;
+  const elapsed = videoTime - commentTime;
+  // 1ms 容差，避免 10.2 - 6 这种浮点误差让到期弹幕多停一帧
+  return elapsed >= -0.001 && elapsed < duration - 0.001;
+}
+
+export function fixedDanmakuOpacity(
+  commentTime: number,
+  videoTime: number,
+  duration: number,
+  opacity: number
+): number {
+  if (!isDanmakuActive(commentTime, videoTime, duration)) return 0;
+  const elapsed = videoTime - commentTime;
+  const fade = Math.min(0.4, duration / 4);
+  if (fade <= 0) return opacity;
+  if (elapsed < fade) return opacity * (elapsed / fade);
+  const tail = duration - elapsed;
+  if (tail < fade) return opacity * (tail / fade);
+  return opacity;
+}
+
+export type ActiveDanmaku = DisplayDanmaku & { index: number };
+
+function lowerBoundTime(comments: Array<{ time: number }>, time: number): number {
+  let lo = 0;
+  let hi = comments.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (comments[mid].time < time) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+export function collectActiveDanmaku(
+  comments: DisplayDanmaku[],
+  videoTime: number,
+  limit: number
+): ActiveDanmaku[] {
+  if (limit <= 0 || comments.length === 0) return [];
+  const windowStart = videoTime - DANMAKU_SCROLL_DURATION;
+  let index = lowerBoundTime(comments, windowStart);
+  const active: ActiveDanmaku[] = [];
+  for (; index < comments.length; index += 1) {
+    const item = comments[index];
+    if (item.time > videoTime) break;
+    if (!isDanmakuActive(item.time, videoTime, danmakuDuration(item.mode))) continue;
+    active.push({ ...item, index });
+  }
+  if (active.length <= limit) return active;
+  return active.slice(active.length - limit);
+}
+
+export function reconcileVideoClock(
+  clock: VideoClockSnapshot,
+  sample: VideoClockSyncState,
+  now: number,
+  snapSec = VIDEO_CLOCK_SNAP_SEC
+): VideoClockSnapshot {
+  const rate = sample.rate || 1;
+  if (!sample.playing) {
+    return { time: sample.videoTime, wall: now, playing: false, rate };
+  }
+  const predicted = interpolateVideoTime(clock, now);
+  const drift = sample.videoTime - predicted;
+  if (!clock.playing || clock.rate !== rate || Math.abs(drift) >= snapSec) {
+    return { time: sample.videoTime, wall: now, playing: true, rate };
+  }
+  return { time: predicted + drift * 0.5, wall: now, playing: true, rate };
 }
 
 export function scrollTranslateX(screenWidth: number, itemWidth: number, progress: number): number {

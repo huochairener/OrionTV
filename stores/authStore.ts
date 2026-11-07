@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { api } from "@/services/api";
+import { LoginCredentialsManager } from "@/services/storage";
 import { useSettingsStore } from "./settingsStore";
 import Toast from "react-native-toast-message";
 import Logger from "@/utils/Logger";
@@ -59,6 +60,20 @@ const useAuthStore = create<AuthState>((set) => ({
 
       const authToken = await AsyncStorage.getItem('authCookies');
       if (!authToken) {
+        // 优先用上次登录保存的账号密码自动登录，避免每次打开应用都要手动登录
+        const savedCredentials = await LoginCredentialsManager.get();
+        if (savedCredentials?.password) {
+          const username = savedCredentials.username.trim() || undefined;
+          try {
+            const loginResult = await api.login(username, savedCredentials.password);
+            if (loginResult && loginResult.ok) {
+              set({ isLoggedIn: true, isLoginModalVisible: false });
+              return;
+            }
+          } catch (loginError) {
+            logger.warn("Auto login with saved credentials failed:", loginError);
+          }
+        }
         if (serverConfig && serverConfig.StorageType === "localstorage") {
           const loginResult = await api.login().catch(() => {
             set({ isLoggedIn: false, isLoginModalVisible: true });
@@ -84,9 +99,12 @@ const useAuthStore = create<AuthState>((set) => ({
   logout: async () => {
     try {
       await api.logout();
-      set({ isLoggedIn: false, isLoginModalVisible: true });
     } catch (error) {
       logger.error("Failed to logout:", error);
+    } finally {
+      // 同时清除已保存的登录凭据，否则下次启动会被自动登录，导致无法真正退出
+      await LoginCredentialsManager.clear();
+      set({ isLoggedIn: false, isLoginModalVisible: true });
     }
   },
 }));

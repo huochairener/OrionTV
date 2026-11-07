@@ -1,10 +1,13 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import EventSource from "react-native-sse";
+import { LoginCredentialsManager } from "./storage";
 import type {
   DanmakuCommentsResponse,
   DanmakuEpisodesResponse,
   DanmakuSearchResponse,
 } from "@/utils/danmaku";
+import { buildDanmakuRequestPath } from "@/utils/danmakuApi";
+import { parseDanmakuCommentsPayload } from "@/utils/danmaku";
 
 // region: --- Interface Definitions ---
 export interface DoubanItem {
@@ -101,6 +104,7 @@ export interface ServerConfig {
 
 export class API {
   public baseURL: string = "";
+  public danmakuBaseURL: string = "";
 
   constructor(baseURL?: string) {
     if (baseURL) {
@@ -112,12 +116,78 @@ export class API {
     this.baseURL = url;
   }
 
+  public setDanmakuBaseUrl(url: string) {
+    this.danmakuBaseURL = url;
+  }
+
+  public usesDirectDanmakuApi(): boolean {
+    return Boolean(this.danmakuBaseURL);
+  }
+
+  private async _authHeaders(extra: HeadersInit = {}): Promise<HeadersInit> {
+    const cookies = await AsyncStorage.getItem("authCookies");
+    const match = cookies?.match(/auth=([^;]+)/);
+    if (!match) return extra;
+    return {
+      ...extra,
+      Cookie: `auth=${match[1]}`,
+    };
+  }
+
+  private _reloginPromise: Promise<boolean> | null = null;
+
+  /**
+   * 使用本地保存的登录凭据静默重登（会话过期时自动恢复登录态，无需手动重新登录）。
+   * 并发请求共享同一次重登，避免重复调用登录接口。
+   */
+  private async _silentRelogin(): Promise<boolean> {
+    if (!this._reloginPromise) {
+      this._reloginPromise = (async () => {
+        try {
+          const credentials = await LoginCredentialsManager.get();
+          if (credentials?.password) {
+            const username = credentials.username.trim() || undefined;
+            const result = await this.login(username, credentials.password);
+            return Boolean(result?.ok);
+          }
+          // 未保存过账号密码时，尝试游客登录（localstorage 无密码服务器）
+          const guestResult = await this.login();
+          return Boolean(guestResult?.ok);
+        } catch {
+          return false;
+        } finally {
+          this._reloginPromise = null;
+        }
+      })();
+    }
+    return this._reloginPromise;
+  }
+
   private async _fetch(url: string, options: RequestInit = {}): Promise<Response> {
     if (!this.baseURL) {
       throw new Error("API_URL_NOT_SET");
     }
 
-    const response = await fetch(`${this.baseURL}${url}`, options);
+    let response = await fetch(`${this.baseURL}${url}`, {
+      ...options,
+      headers: await this._authHeaders(options.headers),
+    });
+
+    // 会话过期（401）时先尝试静默重登并重试一次原请求；
+    // 登录/登出接口自身的 401 不属于会话过期，不做重试
+    if (
+      response.status === 401 &&
+      url !== "/api/login" &&
+      url !== "/api/logout"
+    ) {
+      const reloginSucceeded = await this._silentRelogin();
+      if (reloginSucceeded) {
+        response = await fetch(`${this.baseURL}${url}`, {
+          ...options,
+          headers: await this._authHeaders(options.headers),
+        });
+      }
+    }
 
     if (response.status === 401) {
       throw new Error("UNAUTHORIZED");
@@ -128,6 +198,36 @@ export class API {
     }
 
     return response;
+  }
+
+  private async _fetchDanmaku(url: string, options: RequestInit = {}): Promise<Response> {
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), 15000);
+    try {
+      if (this.danmakuBaseURL) {
+        const response = await fetch(`${this.danmakuBaseURL}${url}`, {
+          ...options,
+          signal: abortController.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response;
+      }
+      return await this._fetch(url, { ...options, signal: abortController.signal });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async fetchHomepageHtml(): Promise<string> {
+    if (!this.baseURL) {
+      throw new Error("API_URL_NOT_SET");
+    }
+    const response = await fetch(this.baseURL, {
+      headers: await this._authHeaders(),
+    });
+    return response.text();
   }
 
   async login(username?: string | undefined, password?: string): Promise<{ ok: boolean }> {
@@ -334,21 +434,51 @@ export class API {
   }
 
   async searchDanmaku(keyword: string): Promise<DanmakuSearchResponse> {
-    const url = `/api/danmaku/search?keyword=${encodeURIComponent(keyword)}`;
-    const response = await this._fetch(url);
-    return response.json();
+    const url = buildDanmakuRequestPath("search", { keyword }, this.usesDirectDanmakuApi());
+    const response = await this._fetchDanmaku(url);
+    const json = await response.json();
+    const animes = (Array.isArray(json.animes) ? json.animes : []).map((anime: any) => ({
+      ...anime,
+      source: anime.source || anime.typeDescription || "",
+      episodeCount: anime.episodeCount ?? anime.episodes?.length,
+    }));
+    // 与 getDanmakuEpisodes 保持一致的成功字段归一化，兼容缺失 success 字段的上游响应
+    return {
+      errorCode: json.errorCode ?? 0,
+      success: json.success ?? (json.errorCode === 0 || animes.length > 0),
+      errorMessage: json.errorMessage ?? "",
+      animes,
+    };
   }
 
   async getDanmakuEpisodes(animeId: number): Promise<DanmakuEpisodesResponse> {
-    const url = `/api/danmaku/episodes?animeId=${animeId}`;
-    const response = await this._fetch(url);
-    return response.json();
+    const url = buildDanmakuRequestPath("episodes", { animeId }, this.usesDirectDanmakuApi());
+    const response = await this._fetchDanmaku(url);
+    const json = await response.json();
+    const episodes = json.bangumi?.episodes || json.episodes || [];
+    return {
+      errorCode: json.errorCode ?? 0,
+      success: json.success ?? (json.errorCode === 0 || episodes.length > 0),
+      errorMessage: json.errorMessage ?? "",
+      bangumi: json.bangumi || {
+        bangumiId: json.bangumiId || String(animeId),
+        animeTitle: json.animeTitle || "",
+        episodes,
+      },
+    };
   }
 
   async getDanmakuComments(episodeId: number): Promise<DanmakuCommentsResponse> {
-    const url = `/api/danmaku/comment?episodeId=${episodeId}`;
-    const response = await this._fetch(url);
-    return response.json();
+    const url = buildDanmakuRequestPath("comments", { episodeId }, this.usesDirectDanmakuApi());
+    const response = await this._fetchDanmaku(url);
+    // 直连 dandanplay 兼容上游默认返回弹幕 XML，代理模式返回 JSON；统一双格式归一化
+    return parseDanmakuCommentsPayload(await response.text());
+  }
+
+  async getDanmakuCommentsByUrl(videoUrl: string): Promise<DanmakuCommentsResponse> {
+    const url = buildDanmakuRequestPath("commentsByUrl", { videoUrl }, this.usesDirectDanmakuApi());
+    const response = await this._fetchDanmaku(url);
+    return parseDanmakuCommentsPayload(await response.text());
   }
 }
 

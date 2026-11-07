@@ -231,27 +231,24 @@ const useDetailStore = create<DetailState>((set, get) => ({
         if (netInfo.type !== 'cellular') {
           // 非移动网络才会开启测速
           logger.info('开始源测速')
-          const searchResults = finalState.searchResults;
-          searchResults.sort((a, b) => b.speed - a.speed);
-          for(const i in searchResults) {
-            const result = searchResults[i];
+          // 必须用新数组/新对象更新 state：原地 sort + 同引用 set 会导致
+          // FlashList 不感知重排，换源弹窗显示的顺序与真实数组不一致
+          let searchResults = [...finalState.searchResults].sort((a, b) => b.speed - a.speed);
+          set({ searchResults });
+          for (const result of searchResults) {
             logger.info(`源:${result.source_name} 测速开始`)
             const m3u8Info = await getTsSpeed(result.episodes[0], result.firstTsUrl, signal);
             if (m3u8Info) {
-              result.speed = m3u8Info.speed;
-              searchResults.sort((a, b) => b.speed - a.speed)
-              set({
-                searchResults
-              });
-              logger.info(`源:${result.source_name} 测速结束, 速度: ${result.speed} KB/s`)
+              searchResults = searchResults
+                .map((r) => (r === result ? { ...r, speed: m3u8Info.speed } : r))
+                .sort((a, b) => b.speed - a.speed);
+              set({ searchResults });
+              logger.info(`源:${result.source_name} 测速结束, 速度: ${m3u8Info.speed} KB/s`)
             } else {
               logger.info(`源:${result.source_name} 测速失败`)
             }
             if (signal.aborted) return;
           }
-          set({
-            searchResults
-          });
           logger.info('结束源测速')
         }
         logger.info(`[SUCCESS] DetailStore.init completed successfully with ${finalState.searchResults.length} sources`);

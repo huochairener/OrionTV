@@ -1,10 +1,8 @@
-import React from "react";
-import { View, Text, StyleSheet, ActivityIndicator, TextInput, Pressable } from "react-native";
-import { FlashList } from "@shopify/flash-list";
+import React, { useState } from "react";
+import { View, Text, StyleSheet, TextInput, Pressable, ScrollView, Keyboard, ActivityIndicator } from "react-native";
 import Modal from "react-native-modal";
 import { StyledButton } from "./StyledButton";
 import useDanmakuStore from "@/stores/danmakuStore";
-import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { formatDanmakuSourceLabel } from "@/utils/danmaku";
 
 export const DanmakuSourceModal: React.FC = () => {
@@ -21,6 +19,7 @@ export const DanmakuSourceModal: React.FC = () => {
     selectAnime,
     selectEpisode,
     loading,
+    probing,
     searchError,
     enabled,
     toggleEnabled,
@@ -30,9 +29,20 @@ export const DanmakuSourceModal: React.FC = () => {
     setArea,
     setDensity,
   } = useDanmakuStore();
-  const responsiveConfig = useResponsiveLayout();
+  const [focusFirstSource, setFocusFirstSource] = useState(false);
 
   const onClose = () => setShowModal(false);
+
+  const runSearch = () => {
+    Keyboard.dismiss();
+    setFocusFirstSource(false);
+    void search(undefined, { fromUser: true }).then(() => {
+      const next = useDanmakuStore.getState();
+      if (next.sources.length > 0 && !next.selectedAnime) {
+        setFocusFirstSource(true);
+      }
+    });
+  };
 
   return (
     <Modal
@@ -42,6 +52,8 @@ export const DanmakuSourceModal: React.FC = () => {
       onBackdropPress={onClose}
       onSwipeComplete={onClose}
       swipeDirection="down"
+      propagateSwipe
+      avoidKeyboard
       style={styles.modalContainer}
     >
       <View style={styles.modalContent}>
@@ -102,53 +114,83 @@ export const DanmakuSourceModal: React.FC = () => {
             placeholder="搜索弹幕源"
             placeholderTextColor="#888"
             style={styles.input}
-            onSubmitEditing={() => search()}
+            onSubmitEditing={runSearch}
             returnKeyType="search"
           />
-          <StyledButton text="搜索" onPress={() => search()} style={styles.searchBtn} textStyle={styles.searchBtnText} />
-        </View>
-        {loading ? <ActivityIndicator color="#00bb5e" style={{ marginVertical: 8 }} /> : null}
-        {searchError ? <Text style={styles.error}>{searchError}</Text> : null}
-
-        {selectedAnime ? (
-          <>
-            <Pressable onPress={() => useDanmakuStore.setState({ selectedAnime: null, episodes: [] })}>
-              <Text style={styles.back}>‹ 返回源列表 · {selectedAnime.animeTitle}</Text>
-            </Pressable>
-            <FlashList
-              data={episodes}
-              estimatedItemSize={52}
-              extraData={selection?.episodeId}
-              keyExtractor={(item) => `ep-${item.episodeId}`}
-              numColumns={Math.max(1, Math.floor((responsiveConfig.screenWidth * 0.8) / 160))}
-              renderItem={({ item }) => (
-                <StyledButton
-                  text={item.episodeTitle}
-                  onPress={() => selectEpisode(item)}
-                  isSelected={selection?.episodeId === item.episodeId}
-                  style={styles.item}
-                  textStyle={styles.itemText}
-                />
-              )}
-            />
-          </>
-        ) : (
-          <FlashList
-            data={sources}
-            estimatedItemSize={64}
-            extraData={selection?.animeId}
-            keyExtractor={(item) => `anime-${item.animeId}-${item.source}`}
-            renderItem={({ item, index }) => (
-              <StyledButton
-                text={formatDanmakuSourceLabel(item)}
-                onPress={() => selectAnime(item, index)}
-                isSelected={selection?.animeId === item.animeId}
-                style={styles.item}
-                textStyle={styles.itemText}
-              />
-            )}
+          <StyledButton
+            text={loading && !selectedAnime ? "搜索中" : "搜索"}
+            onPress={runSearch}
+            isLoading={loading && !selectedAnime}
+            disabled={loading}
+            style={styles.searchBtn}
+            textStyle={styles.searchBtnText}
           />
-        )}
+        </View>
+        {loading ? (
+          <View style={styles.statusRow}>
+            <ActivityIndicator size="small" color="#00bb5e" />
+            <Text style={styles.hint}>
+              {selectedAnime ? "正在加载分集..." : `正在搜索「${searchKeyword}」的弹幕源...`}
+            </Text>
+          </View>
+        ) : null}
+        {searchError ? <Text style={styles.error}>{searchError}</Text> : null}
+        {!loading && !searchError && !selectedAnime && sources.length === 0 ? (
+          <Text style={styles.hint}>暂无弹幕源，输入关键词后点击搜索</Text>
+        ) : null}
+
+        <View style={styles.listPane}>
+          {!loading && !selectedAnime && sources.length > 0 ? (
+            <Text style={styles.hint}>
+              {probing
+                ? `找到 ${sources.length} 个弹幕源，正在统计各源弹幕数...`
+                : `找到 ${sources.length} 个弹幕源，请选择`}
+            </Text>
+          ) : null}
+          {selectedAnime ? (
+            <ScrollView style={styles.list} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+              <Pressable
+                onPress={() => {
+                  setFocusFirstSource(true);
+                  useDanmakuStore.setState({ selectedAnime: null, episodes: [] });
+                }}
+              >
+                <Text style={styles.back}>‹ 返回源列表 · {selectedAnime.animeTitle}</Text>
+              </Pressable>
+              <View style={styles.episodeWrap} onStartShouldSetResponder={() => true}>
+                {episodes.map((item) => (
+                  <StyledButton
+                    key={`ep-${item.episodeId}`}
+                    text={item.episodeTitle}
+                    onPress={() => selectEpisode(item)}
+                    isSelected={selection?.episodeId === item.episodeId}
+                    style={styles.episodeItem}
+                    textStyle={styles.itemText}
+                  />
+                ))}
+              </View>
+            </ScrollView>
+          ) : (
+            <ScrollView style={styles.list} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+              <View onStartShouldSetResponder={() => true}>
+                {sources.map((item, index) => (
+                  <StyledButton
+                    key={`anime-${item.animeId}-${item.source}`}
+                    text={formatDanmakuSourceLabel(item)}
+                    onPress={() => {
+                      setFocusFirstSource(false);
+                      void selectAnime(item, index);
+                    }}
+                    isSelected={selection?.animeId === item.animeId}
+                    hasTVPreferredFocus={focusFirstSource && index === 0}
+                    style={styles.item}
+                    textStyle={styles.itemText}
+                  />
+                ))}
+              </View>
+            </ScrollView>
+          )}
+        </View>
       </View>
     </Modal>
   );
@@ -164,6 +206,22 @@ const styles = StyleSheet.create({
     height: "100%",
     backgroundColor: "rgba(0, 0, 0, 0.9)",
     padding: 16,
+  },
+  listPane: {
+    flex: 1,
+    minHeight: 96,
+  },
+  list: {
+    flex: 1,
+  },
+  episodeWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  episodeItem: {
+    paddingVertical: 10,
+    margin: 4,
+    minWidth: 120,
   },
   modalTitle: {
     color: "white",
@@ -204,7 +262,7 @@ const styles = StyleSheet.create({
   },
   settingBtn: {
     flex: 1,
-    paddingVertical: 8,
+    paddingVertical: 4,
     paddingHorizontal: 6,
     minWidth: 0,
   },
@@ -231,6 +289,17 @@ const styles = StyleSheet.create({
   },
   searchBtnText: {
     fontSize: 14,
+  },
+  statusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  hint: {
+    color: "#9adbb5",
+    marginBottom: 8,
+    fontSize: 13,
   },
   error: {
     color: "#ff8a8a",
